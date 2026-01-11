@@ -123,6 +123,7 @@ celerybeat.pid
 .env
 .venv
 env/
+!src/env/
 venv/
 ENV/
 env.bak/
@@ -167,3 +168,4 @@ runs/
 
 *.pt
 *.pkl
+*.safetensors
