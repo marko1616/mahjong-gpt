@@ -3,7 +3,6 @@ import sys
 import time
 import pickle
 import random
-import psutil
 import asyncio
 from typing import Callable, Iterable
 from dataclasses import dataclass, field
@@ -153,10 +152,9 @@ class Agent:
             self.value_model = torch.compile(self.value_model)
             self.value_model_old = torch.compile(self.value_model_old)
 
-        self.worker_count = getattr(self.sc, "num_workers", 4) 
+        self.worker_count = getattr(self.sc, "num_workers", 4)
         self.workers = [
-            AsyncMahjongEnv(seed=self.seed + i) 
-            for i in range(self.worker_count)
+            AsyncMahjongEnv(seed=self.seed + i) for i in range(self.worker_count)
         ]
         print(f"Initialized {self.worker_count} async environment workers.")
 
@@ -294,7 +292,9 @@ class Agent:
             action = torch.multinomial(probs, num_samples=1).item()
         return action
 
-    def update(self, memories: Iterable[Trail], call_back: Callable | None = None) -> None:
+    def update(
+        self, memories: Iterable[Trail], call_back: Callable | None = None
+    ) -> None:
         """PPO update using true minibatch size (timesteps) and gradient accumulation."""
         memories = list(memories)
         if not memories:
@@ -464,12 +464,14 @@ class Agent:
         if kls:
             print(f"AVR approx KL: {sum(kls) / len(kls):.6f}")
 
-    async def get_memory_async(self, env: AsyncMahjongEnv, call_back: Callable | None = None) -> None:
+    async def get_memory_async(
+        self, env: AsyncMahjongEnv, call_back: Callable | None = None
+    ) -> None:
         """Collect one episode of trajectories asynchronously."""
         memories = [Trail([], [], [], [], [], []) for _ in range(4)]
 
         if not self.evc.eval_mode:
-            set_seeds(self.seed) # Note: seeds inside worker are separate
+            set_seeds(self.seed)  # Note: seeds inside worker are separate
         else:
             set_seeds()
 
@@ -481,7 +483,7 @@ class Agent:
         if self.seed_count >= self.ec.stable_seed_steps:
             self.seed_count = 0
             self.seed += 1
-            # Note: We don't re-init env here to save overhead, 
+            # Note: We don't re-init env here to save overhead,
             # ideally pass seed to reset() if env supports it.
 
         no_memory_index = []
@@ -549,11 +551,11 @@ class Agent:
     def get_memory_batch(self, call_back: Callable | None = None) -> None:
         """Collect multiple episodes in parallel."""
         total_games = int(self.evc.memget_num_per_update / 4)
-        
+
         # Distribute games among workers
         base_count = total_games // self.worker_count
         remainder = total_games % self.worker_count
-        
+
         tasks = []
         for i, worker in enumerate(self.workers):
             count = base_count + (1 if i < remainder else 0)
@@ -562,11 +564,12 @@ class Agent:
 
         async def _batch_runner():
             await asyncio.gather(*tasks)
+
         asyncio.run(_batch_runner())
 
     def __del__(self):
         # Cleanup workers
-        if hasattr(self, 'workers'):
+        if hasattr(self, "workers"):
             for w in self.workers:
                 w.close()
 

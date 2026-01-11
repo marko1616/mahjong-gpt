@@ -1,58 +1,101 @@
-# 一个基于GPT模型的立直麻将bot
+# Riichi Mahjong Bot Based on GPT Model
 
-本项目实现了一个基于强化学习的立直麻将智能体，使用深度策略梯度方法（如PPO算法）和GPT模型来进行决策学习。
+[ English | [中文](README_zh.md) ]
 
-## TODO
- ### 重点
-  - 代码解耦和风格优化
-  - 修复各个逻辑bug并更新默认超参数
- ### 部署时
-  - 添加实际部署的支持(如雀魂)
-  - 考虑在第一层估计枚举联合值函数估计?
+This project implements a Riichi Mahjong intelligent agent based on reinforcement learning, using deep policy gradient methods (PPO algorithm) and GPT models for decision learning.
 
-## 环境需求
+## Requirements
 
-- Python 3.11 或更高版本
-- PyTorch 2.0 或更高版本
-- mahjong 库(需要修复，参阅:https://github.com/MahjongRepository/mahjong/issues/54)
+- Python 3.11 or higher
+- PyTorch 2.0 or higher
 
-## 运行指导
+## Installation
 
-1. 克隆仓库到本地：
+1. Clone the repository:
    ```bash
    git clone https://github.com/marko1616/mahjong_DRL
    ```
-2. 进入项目目录：
+
+2. Enter the project directory:
    ```bash
    cd mahjong_DRL
    ```
-3. 安装依赖：
-   - Torch请自行根据操作系统安装
+
+3. Install dependencies:
    ```bash
+   # Install PyTorch according to your OS and CUDA version
+   # See: https://pytorch.org/get-started/locally/
+   
    pip install -r requirements.txt
    ```
 
-## 使用说明
+## Usage
 
-1. 启动训练：
+1. Start training:
    ```bash
-   python ppo.py
+   python src/ppo.py
    ```
-   这将启动代理的训练过程，训练日志和模型权重会自动保存在指定的目录中(相关超参数调整在各个文件中)。
+   This will start the agent training process. Training logs and model weights will be automatically saved to the specified directories.
 
-2. 监控训练：
-   使用TensorBoard查看训练进度和性能：
+2. Monitor training:
+   Use TensorBoard to view training progress and performance:
+   ```bash
+   tensorboard --logdir=runs
+   ```
 
-## 项目结构
+3. Configuration:
+   Modify `src/config.py` to adjust hyperparameters. The configuration uses dataclasses for type-safe settings:
+   ```python
+   from config import get_default_config, get_custom_config
+   
+   # Use default configuration
+   config = get_default_config()
+   
+   # Or customize
+   config = get_custom_config(
+       episodes=200,
+       lr=1e-6,
+       batch_size=16,
+       device="cuda:0"
+   )
+   ```
 
-- `agent.py`: 包含`Agent`类，实现麻将学习代理的主要功能。
-- `model.py`: 定义了使用的GPT模型（参考miniGPT）。
-- `env.py`: 麻将游戏的环境实现。
-- `schedulers.py`: 实现了用于超参数调度的类。
-- `ppo.py`: 算法实现，负责启动训练流程。
-- `config.py`: 超参数
-- `infer.py`: 推理进程,有了这个可以多卡同步推理提升轨迹收集效率
+## Project Structure
 
-## 版权和许可
+```
+src/
+├── ppo.py              # PPO algorithm implementation and training entry point
+├── model.py            # GPT model definition (based on minGPT)
+├── config.py           # Hyperparameter configuration (dataclass-based)
+├── schedulers.py       # Learning rate and parameter schedulers
+├── utils/
+│   └── stats_utils.py  # Statistical utilities (CI bounds, running stats)
+└── env/
+    ├── __init__.py
+    ├── env.py          # Main Mahjong environment implementation
+    ├── constants.py    # Action space constants
+    ├── tiles.py        # Tile conversion utilities
+    ├── tokens.py       # Token vocabulary and TokenList class
+    ├── hand.py         # Hand management with shanten calculation
+    ├── player.py       # Player state management
+    ├── wall.py         # Tile wall distribution
+    ├── event_bus.py    # Pub-sub event system
+    ├── reward_config.py# Reward configuration (pydantic-based)
+    └── worker.py       # Async multiprocessing environment wrapper
+```
 
-本项目遵循Apache2.0许可证。详细信息请查看`LICENSE`文件。
+## Action Space
+
+The action space consists of 47 actions (indices 0-46, where 0 is unused padding):
+
+| Action ID | Description |
+|-----------|-------------|
+| 1-34      | Discard tile (tile34 = id - 1) |
+| 35-37     | Chi (upper/middle/lower) |
+| 38        | Pon |
+| 39-41     | Kan (open/add/closed) |
+| 42        | Pei (3-player, reserved) |
+| 43        | Riichi |
+| 44        | Ron |
+| 45        | Tsumo |
+| 46        | Pass |
