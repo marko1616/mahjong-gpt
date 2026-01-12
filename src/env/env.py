@@ -28,7 +28,7 @@ from .reward_config import RewardConfig
 from .tiles import tile34_to_str
 from .wall import MahjongWall
 from .player import MahjongPlayer
-from .tokens import TokenList, action_token
+from .tokens import TokenList
 
 
 @dataclass(frozen=True)
@@ -48,11 +48,10 @@ class MahjongEnv:
     Multi-seat Mahjong environment.
 
     Action space:
-        - action id in [1..46]
-        - Index 0 in action_mask is unused padding for compatibility
+        - action id in [0..45]
     """
 
-    def __init__(self, seed: int = 0, reward: Optional[RewardConfig] = None) -> None:
+    def __init__(self, seed: Optional[int] = None, reward: Optional[RewardConfig] = None) -> None:
         self.rng = random.Random(seed)
         self.bus = EventBus()
         self.reward = reward or RewardConfig()
@@ -75,20 +74,22 @@ class MahjongEnv:
         self.history_tokens: TokenList = TokenList()
         self.force_discard_only: bool = False
 
-    def reset(self) -> Tuple[Dict, float, bool, Dict]:
+    def reset(self, seed: Optional[int] = None) -> Tuple[Dict, float, bool, Dict]:
         """
         Reset the game state and deal initial tiles.
 
         Returns:
             Tuple of (observation, reward, done, info).
         """
+        self.rng = random.Random(seed)
+
         self.done = False
         self.pending_done = False
         self.seat_now = 0
         self.kang_count = 0
         self.claiming_from = 0
         self.pending_claims = []
-        self.history_tokens = []
+        self.history_tokens = TokenList()
         self.force_discard_only = False
 
         self.wall.reset()
@@ -101,7 +102,7 @@ class MahjongEnv:
 
         self.players[0].draw(self.wall.draw())
 
-        obs, info = self._build_obs_and_info(reward_update=0.0, seat=0)
+        obs, info = self._build_obs_and_info(reward_update=0.0)
         return obs, 0.0, self.done, info
 
     def step(self, action: int) -> Tuple[Dict, float, bool, Dict]:
@@ -109,7 +110,7 @@ class MahjongEnv:
         Execute one action step.
 
         Args:
-            action: Action id in [1..46].
+            action: Action id in [0..45].
 
         Returns:
             Tuple of (observation, reward, done, info).
@@ -119,25 +120,24 @@ class MahjongEnv:
         """
         if self.done:
             return (
-                self._build_obs_and_info(reward_update=0.0, seat=0)[0],
+                self._build_obs_and_info(reward_update=0.0)[0],
                 0.0,
                 True,
-                self._build_obs_and_info(0.0, 0)[1],
+                self._build_obs_and_info(0.0)[1],
             )
 
-        self.history_tokens.append(action_token(action))
-        seat = self.seat_now
+        self.history_tokens.append(action)
 
         reward = 0.0
         reward_update = 0.0
 
         if self.pending_claims:
             reward = self._handle_claim_phase(action)
-            obs, info = self._build_obs_and_info(reward_update=0.0, seat=seat)
+            obs, info = self._build_obs_and_info(reward_update=0.0)
             return obs, reward, self.done, info
 
         if DISCARD_MIN <= action <= DISCARD_MAX:
-            discard_tile34 = action - 1
+            discard_tile34 = action
             reward_update = self._apply_reward_shaping_before_discard(self.seat_now)
             self._do_discard(self.seat_now, discard_tile34)
             self._generate_claims_from_discard(
@@ -150,27 +150,27 @@ class MahjongEnv:
             else:
                 self._advance_to_next_draw()
 
-            obs, info = self._build_obs_and_info(reward_update=reward_update, seat=seat)
+            obs, info = self._build_obs_and_info(reward_update=reward_update)
             return obs, reward, self.done, info
 
         if action == TSUMO:
             reward = self._handle_tsumo()
-            obs, info = self._build_obs_and_info(reward_update=0.0, seat=seat)
+            obs, info = self._build_obs_and_info(reward_update=0.0)
             return obs, reward, self.done, info
 
         if action == RIICHI:
             reward = self._handle_riichi()
             self.force_discard_only = True
-            obs, info = self._build_obs_and_info(reward_update=0.0, seat=seat)
+            obs, info = self._build_obs_and_info(reward_update=0.0)
             return obs, reward, self.done, info
 
         if action in (KAN_CLOSED, KAN_ADD):
             reward = self._handle_self_kan(action)
-            obs, info = self._build_obs_and_info(reward_update=0.0, seat=seat)
+            obs, info = self._build_obs_and_info(reward_update=0.0)
             return obs, reward, self.done, info
 
         if action == PASS:
-            obs, info = self._build_obs_and_info(reward_update=0.0, seat=seat)
+            obs, info = self._build_obs_and_info(reward_update=0.0)
             return obs, 0.0, self.done, info
 
         raise ValueError(f"unsupported action in turn phase: {action}")
@@ -541,14 +541,13 @@ class MahjongEnv:
     def _action_mask(self) -> list[int]:
         """Build a 46-length local action mask for current seat."""
         mask = [0] * ACTIONS_PER_SEAT
-        seat = self.seat_now
-        p = self.players[seat]
+        p = self.players[self.seat_now]
 
         if self.pending_claims:
-            offered = [c for c in self.pending_claims if c.claimant == seat]
+            offered = [c for c in self.pending_claims if c.claimant == self.seat_now]
             for c in offered:
-                mask[c.action - 1] = 1
-            mask[PASS - 1] = 1
+                mask[c.action] = 1
+            mask[PASS] = 1
             return mask
 
         if self.force_discard_only:
@@ -556,17 +555,17 @@ class MahjongEnv:
             return mask
 
         if p.hand.shanten(self.shanten_calc) == -1:
-            mask[TSUMO - 1] = 1
+            mask[TSUMO] = 1
 
         if (
             (not p.state.riichi)
             and (not p.hand.melds)
             and (p.hand.shanten(self.shanten_calc) == 0)
         ):
-            mask[RIICHI - 1] = 1
+            mask[RIICHI] = 1
 
         if any(c == 4 for c in p.hand.as_tile34()):
-            mask[KAN_CLOSED - 1] = 1
+            mask[KAN_CLOSED] = 1
 
         self._fill_discard_mask(mask, p)
         return mask
@@ -574,19 +573,18 @@ class MahjongEnv:
     def _fill_discard_mask(self, mask: list[int], p: MahjongPlayer) -> None:
         """Fill valid discard actions into the mask."""
         if p.state.riichi and p.state.riichi_lock and p.state.last_drawn is not None:
-            mask[(p.state.last_drawn + 1) - 1] = 1
+            mask[p.state.last_drawn] = 1
             return
 
         counts = p.hand.as_tile34()
         for tile34, cnt in enumerate(counts):
             if cnt > 0:
-                mask[(tile34 + 1) - 1] = 1
+                mask[tile34] = 1
 
-    def _build_obs_and_info(self, reward_update: float, seat: int) -> Tuple[Dict, Dict]:
+    def _build_obs_and_info(self, reward_update: float) -> Tuple[Dict, Dict]:
         """Build observation and info dictionaries."""
-        local_mask = [0] + self._action_mask()  # Add [SEP]
         if not self.done:
-            self.history_tokens.append(PLAYER_TOKENS[seat])
+            self.history_tokens.append(PLAYER_TOKENS[self.seat_now])
         obs = {
             "tokens": self.history_tokens,
             "is_three": 0,
@@ -594,7 +592,7 @@ class MahjongEnv:
             "hand": self.players[self.seat_now].hand.as_tile34(),
         }
         info = {
-            "action_mask": local_mask,
+            "action_mask": self._action_mask(),
             "reward_update": float(reward_update),
         }
         return obs, info
@@ -704,8 +702,8 @@ class MahjongEnv:
 
 
 def action_to_str(action: int) -> str:
-    if 1 <= action <= 34:
-        return f"discards {tile34_to_str(action - 1)}"
+    if 0 <= action <= 33:
+        return f"discards {tile34_to_str(action)}"
     if action in (CHI_UP, CHI_MID, CHI_DOWN):
         return "calls CHI"
     if action == PON:

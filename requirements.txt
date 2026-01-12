@@ -1,3 +1,5 @@
 torch
-psutil
 mahjong
+tensorboard
+safetensors
+pydantic

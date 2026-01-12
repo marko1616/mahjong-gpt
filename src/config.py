@@ -2,22 +2,23 @@ import torch
 import datetime
 from dataclasses import dataclass, field
 from schedulers import Scheduler, SchedulerConfig, ConstantScheduler
+from env.constants import PAD_ID
 
 
 @dataclass
 class TrainingConfig:
     """Training hyperparameters"""
 
-    replay_buffer_size: int = 1200
-    epoches_per_update: int = 1
+    replay_buffer_size: int = 1600
+    epoches_per_update: int = 2
     max_update_kl: float = 1
     clip_epsilon: float = 0.4
     weight_policy: float = 1
-    weight_value: float = 1.5
-    sample_trail_count: int = 1200
-    batch_size: int = 16
-    grad_accum_steps: int = 8
-    episodes: int = 200
+    weight_value: float = 1
+    sample_trail_count: int = 1600
+    batch_size: int = 8
+    grad_accum_steps: int = 32
+    episodes: int = 100
     beta: float = 0.2
     lr_value: float = 1e-7
     lr_policy: float = 1e-7
@@ -51,7 +52,7 @@ class EnvConfig:
     """Environment hyperparameters"""
 
     stable_seed_steps: int = 4
-    init_env_seed: int = 547389
+    init_env_seed: int = 31887
     env_num: int = 10
 
 
@@ -61,11 +62,11 @@ class TargetConfig:
 
     target: str = "N_step_TD"
     lambd: float = 0.1
-    gamma: float = 0.10
+    gamma: float = 0.9
 
     alpha_config: SchedulerConfig = field(
         default_factory=lambda: SchedulerConfig(
-            scheduler_type="linear", init=0.2, minimum=0.1
+            scheduler_type="linear", init=0.1, minimum=0.03
         )
     )
 
@@ -100,14 +101,13 @@ class TargetConfig:
 class ModelConfig:
     """Model hyperparameters"""
 
-    layer_policy: int = 8
-    layer_value: int = 8
+    layer_policy: int = 6
+    layer_value: int = 6
     dim_feedforward: int = 1024
     enable_compile: bool = False
-    pad_token_id: int = 81
-    max_seq_len: int = 128
-    action_size: int = 47
-    vocab_size: int = 1 + 46 + 34 + 1  # [SEP], action, hand, [PAD]
+    pad_token_id: int = PAD_ID
+    max_seq_len: int = 512
+    vocab_size: int = 46 + 34 + 4 + 1 + 1 # action, hand, player, [SEP], [PAD]
     max_norm: float = 0.5
     d_model: int = 1024
     dropout: float = 0.1
@@ -119,12 +119,15 @@ class SystemConfig:
     """Compute, save, and display parameters"""
 
     verbose_positive_done_reward: bool = True
-    replay_buffer_file: str = "replay.pkl"
+    replay_buffer_file: str = "replay.json"
     log_dir: str = field(
         default_factory=lambda: f"runs/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
     device: str = "cuda:0"
-    dtype: torch.dtype = torch.float
+    dtype: torch.dtype = torch.float32
+    amp_enable: bool = False
+    amp_device_type: str = "cuda"
+    amp_dtype: torch.dtype = torch.float16
     path_max: str = "./max"
     num_workers: int = 4
 
@@ -135,9 +138,9 @@ class EvalConfig:
 
     eval_mode: bool = False
     path: str = "./mahjong"
-    memget_num_per_update: int = 1200
-    action_temperature: float = 0.2
-    n_display: int = 10
+    memget_num_per_update: int = 1600
+    action_temperature: float = 0.01
+    n_display: int = 16
 
     ci_enabled: bool = True
     ci_confidence: float = 0.95

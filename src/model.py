@@ -182,7 +182,7 @@ class GPTModel(nn.Module):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
-        # 最大的改变就是输出词表不一定需要所有的
+
         assert config.out_size is not None
         self.block_size = config.block_size
 

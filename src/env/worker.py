@@ -1,5 +1,6 @@
 import multiprocessing as mp
 import asyncio
+from typing import Optional, Tuple, Dict
 from env import MahjongEnv
 
 # Command Protocol
@@ -19,7 +20,7 @@ def _worker_loop(pipe, seed: int):
             cmd, data = pipe.recv()
 
             if cmd == CMD_RESET:
-                pipe.send(env.reset())
+                pipe.send(env.reset(seed=data))
             elif cmd == CMD_STEP:
                 # data is action
                 pipe.send(env.step(data))
@@ -43,12 +44,10 @@ class AsyncMahjongEnv:
             target=_worker_loop, args=(self.child_conn, seed)
         )
         self.process.start()
-        # We will use the running loop dynamically, so we don't store it here
 
-    async def reset(self):
+    async def reset(self, seed: Optional[int] = None) -> Tuple[Dict, float, bool, Dict]:
         loop = asyncio.get_running_loop()
-        self.parent_conn.send((CMD_RESET, None))
-        # Offload the blocking recv to the default executor (thread pool)
+        self.parent_conn.send((CMD_RESET, seed))
         return await loop.run_in_executor(None, self.parent_conn.recv)
 
     async def step(self, action):

@@ -166,6 +166,5 @@ saves/
 cache/
 runs/
 
-*.pt
-*.pkl
 *.safetensors
+replay.json

@@ -17,7 +17,7 @@ def tile34_to_str(tile34: int) -> str:
         return f"{(tile34 - 27) + 1}z"
 
 
-def str_to_tile34(tile: str) -> int:
+def tile34_from_str(tile: str) -> int:
     """Convert compact string like '5m' into tile34 index (0..33)."""
     if len(tile) != 2:
         raise ValueError(f"invalid tile string: {tile}")
