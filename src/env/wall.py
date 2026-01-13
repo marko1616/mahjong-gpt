@@ -46,19 +46,17 @@ class MahjongWall:
             raise RuntimeError("rinshan is empty")
         return self.rinshan.popleft()
 
-    def dora_indicators_136(
-        self, kang_count: int, end: bool, riichi: bool
-    ) -> list[int]:
+    def dora_indicators_136(self, kan_count: int, end: bool, riichi: bool) -> list[int]:
         """
         Return dora indicators as 136 array.
         - omote: first 5
         - ura: last 5 (only revealed at end if riichi)
         """
         inds: list[int] = []
-        for i in range(kang_count + 1):
+        for i in range(kan_count + 1):
             inds.append(self.dora_indicators[i])
         if end and riichi:
-            for i in range(kang_count + 1):
+            for i in range(kan_count + 1):
                 inds.append(self.dora_indicators[5 + i])
 
         counts = [0] * 34

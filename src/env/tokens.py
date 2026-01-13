@@ -40,18 +40,18 @@ from .constants import (
 PLAYER_NAMES = ["P0", "P1", "P2", "P3"]
 
 SPEC_MAP = [
-    "CHI_UP",  # 35
-    "CHI_MID",  # 36
-    "CHI_DOWN",  # 37
-    "PON",  # 38
-    "KAN_OPEN",  # 39
-    "KAN_ADD",  # 40
-    "KAN_CLOSED",  # 41
-    "PEI",  # 42
-    "RIICHI",  # 43
-    "RON",  # 44
-    "TSUMO",  # 45
-    "PASS",  # 46
+    "CHI_UP",  # 34
+    "CHI_MID",  # 35
+    "CHI_DOWN",  # 36
+    "PON",  # 37
+    "KAN_OPEN",  # 38
+    "KAN_ADD",  # 39
+    "KAN_CLOSED",  # 40
+    "PEI",  # 41
+    "RIICHI",  # 42
+    "RON",  # 43
+    "TSUMO",  # 44
+    "PASS",  # 45
 ]
 
 
@@ -229,10 +229,6 @@ class TokenList(BaseModel):
         if isinstance(item, int):
             return any(t.token_id == item for t in self.tokens)
         return item in self.tokens
-
-    def iter_tokens(self) -> Iterator[Token]:
-        """Iterate over tokens."""
-        return iter(self.tokens)
 
     def copy(self) -> TokenList:
         """Create a deep copy."""

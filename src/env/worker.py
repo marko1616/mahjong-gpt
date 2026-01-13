@@ -45,6 +45,9 @@ class AsyncMahjongEnv:
         )
         self.process.start()
 
+    def __del__(self):
+        self.close()
+
     async def reset(self, seed: Optional[int] = None) -> Tuple[Dict, float, bool, Dict]:
         loop = asyncio.get_running_loop()
         self.parent_conn.send((CMD_RESET, seed))

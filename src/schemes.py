@@ -10,16 +10,6 @@ from env.tokens import (
 )
 
 
-class StepInfo(BaseModel):
-    """Single step info with optional fields."""
-
-    reward_update: float = 0.0
-    extra: dict = Field(default_factory=dict)
-
-    class Config:
-        extra = "allow"
-
-
 class Trail(BaseModel):
     """A single-player trajectory with Pydantic validation."""
 
@@ -41,6 +31,7 @@ class Trail(BaseModel):
 
 class ReplayBufferData(BaseModel):
     """Serializable container for ReplayBuffer."""
+
     buffer_size: int
     trails: list[Trail] = Field(default_factory=list)
 
@@ -67,7 +58,6 @@ class ReplayBuffer:
 
     def __len__(self) -> int:
         return len(self.buffer)
-
 
     def to_json(self, pretty: bool = False) -> str:
         data = ReplayBufferData(

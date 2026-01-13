@@ -1,13 +1,10 @@
-import os
-import sys
-import time
 import math
 import random
 import asyncio
 from typing import Callable, Iterable, Any
+from pathlib import Path
 
 from rich import print
-from rich.console import Console
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -18,7 +15,6 @@ from rich.progress import (
 )
 
 import torch
-from torch.utils.tensorboard import SummaryWriter
 from torch import optim
 from torch import nn
 from torch.amp import autocast, GradScaler
@@ -26,14 +22,12 @@ from torch.amp import autocast, GradScaler
 
 from safetensors.torch import load_file, save_file
 
-from env import action_to_str
 from env.worker import AsyncMahjongEnv
 
 from env.tokens import TokenList, SEP_ID, HAND_MIN
 
-from utils import RunningStats, z_from_confidence, normal_mean_bounds
-from model import set_seeds, GPTModel
-from config import Config, get_default_config
+from model import GPTModel
+from config import Config
 from schedulers import Scheduler
 from schemes import Trail, ReplayBuffer
 
@@ -50,21 +44,23 @@ class Agent:
 
         self.gamma = self.tgc.gamma
         self.eps_clip = self.tc.clip_epsilon
-        self.K_epochs = self.tc.epoches_per_update
+        self.K_epochs = self.tc.epochs_per_update
         self.weight_policy = self.tc.weight_policy
         self.weight_value = self.tc.weight_value
         self.beta = self.tc.beta
         self.lambd = self.tgc.lambd
 
         self.current_base_seed = self.ec.init_env_seed
-        self.seed_count = 0
         self.rng = random.Random(self.current_base_seed)
 
-        self.seed = self.ec.init_env_seed
         self.seed_count = 0
         self.max_trail_len = 0
 
-        self.amp_ctx = autocast(device_type=self.sc.amp_device_type, enabled=self.sc.amp_enable, dtype=self.sc.amp_dtype)
+        self.amp_ctx = autocast(
+            device_type=self.sc.amp_device_type,
+            enabled=self.sc.amp_enable,
+            dtype=self.sc.amp_dtype,
+        )
         self.amp_scaler = GradScaler(enabled=self.sc.amp_enable)
 
         pconfig = GPTModel.get_default_config()
@@ -76,11 +72,6 @@ class Agent:
         pconfig.block_size = 512
 
         self.policy_model = GPTModel(pconfig)
-        if os.path.exists(f"{self.evc.path}_policy.safetensors"):
-            self.policy_model.load_state_dict(
-                load_file(f"{self.evc.path}_policy.safetensors")
-            )
-            print("Policy model loaded")
 
         self.policy_model_old = GPTModel(pconfig)
         self.policy_model_old.load_state_dict(self.policy_model.state_dict())
@@ -99,11 +90,6 @@ class Agent:
         vconfig.block_size = 512
 
         self.value_model = GPTModel(vconfig)
-        if os.path.exists(f"{self.evc.path}_value.safetensors"):
-            self.value_model.load_state_dict(
-                load_file(f"{self.evc.path}_value.safetensors")
-            )
-            print("Value model loaded")
 
         self.value_model_old = GPTModel(vconfig)
         self.value_model_old.load_state_dict(self.value_model.state_dict())
@@ -114,32 +100,139 @@ class Agent:
         )
         self.MseLoss = nn.MSELoss()
 
-        if os.path.exists(self.sc.replay_buffer_file):
-            try:
-                self.replay_buffer = ReplayBuffer.load(self.sc.replay_buffer_file)
-                print("Replay buffer loaded")
-            except Exception:
-                self.replay_buffer = ReplayBuffer(self.tc.replay_buffer_size)
-                print("Replay buffer load failed, created a new one")
-        else:
-            self.replay_buffer = ReplayBuffer(self.tc.replay_buffer_size)
+        self.replay_buffer = ReplayBuffer(self.tc.replay_buffer_size)
 
         self.policy_model.to(self.sc.device, self.sc.dtype)
         self.policy_model_old.to(self.sc.device, self.sc.dtype)
         self.value_model.to(self.sc.device, self.sc.dtype)
         self.value_model_old.to(self.sc.device, self.sc.dtype)
 
-        if sys.platform.startswith("linux") and self.mc.enable_compile:
-            self.policy_model = torch.compile(self.policy_model)
-            self.policy_model_old = torch.compile(self.policy_model_old)
-            self.value_model = torch.compile(self.value_model)
-            self.value_model_old = torch.compile(self.value_model_old)
-
         self.worker_count = self.sc.num_workers
+        self.worker_seeds = [
+            self.rng.randint(0, 1_000_000_000) for i in range(self.worker_count)
+        ]
         self.workers = [
-            AsyncMahjongEnv(seed=self.rng.randint(0, 1_000_000_000)) for i in range(self.worker_count)
+            AsyncMahjongEnv(seed=self.worker_seeds[i]) for i in range(self.worker_count)
         ]
         print(f"Initialized {self.worker_count} async environment workers.")
+
+    def save_weights(self, ckpt_dir: Path) -> None:
+        """Save model weights needed for exact resume into a checkpoint directory."""
+        save_file(
+            self.policy_model.state_dict(),
+            str(ckpt_dir / "policy.safetensors"),
+        )
+        save_file(
+            self.value_model.state_dict(),
+            str(ckpt_dir / "value.safetensors"),
+        )
+
+    def load_weights(self, ckpt_dir: Path, *, strict: bool = True) -> None:
+        """Load model weights from a checkpoint directory."""
+        p_old = ckpt_dir / "policy.safetensors"
+        v_old = ckpt_dir / "value.safetensors"
+
+        if p_old.exists():
+            self.policy_model_old.load_state_dict(load_file(str(p_old)), strict=strict)
+            # Keep live model consistent unless you explicitly want divergence.
+            self.policy_model.load_state_dict(
+                self.policy_model_old.state_dict(), strict=strict
+            )
+
+        if v_old.exists():
+            self.value_model_old.load_state_dict(load_file(str(v_old)), strict=strict)
+            self.value_model.load_state_dict(
+                self.value_model_old.state_dict(), strict=strict
+            )
+
+    def export_optim_state(self) -> dict[str, Any]:
+        """Export optimizer states for exact resume."""
+        return {
+            "optimizer_policy": self.optimizer_policy.state_dict(),
+            "optimizer_value": self.optimizer_value.state_dict(),
+        }
+
+    def load_optim_state(self, state: dict[str, Any]) -> None:
+        """Restore optimizer states exported by export_optim_state()."""
+        if "optimizer_policy" in state:
+            self.optimizer_policy.load_state_dict(state["optimizer_policy"])
+        if "optimizer_value" in state:
+            self.optimizer_value.load_state_dict(state["optimizer_value"])
+
+    def export_amp_state(self) -> dict[str, Any]:
+        """Export AMP scaler state (empty if AMP is disabled)."""
+        if getattr(self.config.system, "amp_enable", False):
+            return {"amp_scaler": self.amp_scaler.state_dict()}
+        return {}
+
+    def load_amp_state(self, state: dict[str, Any]) -> None:
+        """Restore AMP scaler state if present."""
+        if "amp_scaler" in state and getattr(self.config.system, "amp_enable", False):
+            self.amp_scaler.load_state_dict(state["amp_scaler"])
+
+    def export_scheduler_states(self) -> dict[str, dict[str, Any]]:
+        """Export all scheduler states required for episode-wise resume."""
+        return {
+            "action_epsilon": self.config.training.action_epsilon_scheduler.to_state(),
+            "alpha": self.config.target.alpha_scheduler.to_state(),
+            "n_td": self.config.target.n_td_scheduler.to_state(),
+        }
+
+    def restore_scheduler_states(self, states: dict[str, dict[str, Any]]) -> None:
+        """Restore scheduler states and rebuild live scheduler instances."""
+        tc = self.config.training
+        tgc = self.config.target
+
+        if "action_epsilon" in states:
+            tc.action_epsilon_state = states["action_epsilon"]
+            tc._action_epsilon_scheduler = tc.action_epsilon_config.build(
+                episodes_override=tc.pass_n_episodes,
+                state=tc.action_epsilon_state,
+            )
+
+        if "alpha" in states:
+            tgc.alpha_state = states["alpha"]
+            tgc._alpha_scheduler = tgc.alpha_config.build(state=tgc.alpha_state)
+
+        if "n_td" in states:
+            tgc.n_td_state = states["n_td"]
+            tgc._n_td_scheduler = tgc.n_td_config.build(state=tgc.n_td_state)
+
+    def export_agent_rng_state(self) -> dict[str, Any]:
+        """Export agent-local RNG and counters."""
+        return {
+            "python_rng_state": self.rng.getstate(),
+            "current_base_seed": getattr(self, "current_base_seed", None),
+            "seed_count": getattr(self, "seed_count", 0),
+        }
+
+    def restore_agent_rng_state(self, state: dict[str, Any]) -> None:
+        """Restore agent-local RNG and counters."""
+        if "python_rng_state" in state:
+            self.rng.setstate(state["python_rng_state"])
+        if "current_base_seed" in state and state["current_base_seed"] is not None:
+            self.current_base_seed = state["current_base_seed"]
+        if "seed_count" in state:
+            self.seed_count = state["seed_count"]
+
+    def export_worker_seeds(self) -> list[int]:
+        """Export the per-worker seeds used to construct async env workers."""
+        return self.worker_seeds
+
+    def restore_workers_from_seeds(self, seeds: list[int]) -> None:
+        """Recreate async environment workers from saved seeds."""
+        self.worker_seeds = list(seeds)
+        self.workers = [AsyncMahjongEnv(seed=s) for s in self.worker_seeds]
+
+    def save_replay(self, ckpt_dir: Path) -> None:
+        """Save replay buffer into checkpoint directory."""
+        self.replay_buffer.save(str(ckpt_dir / "replay.json"))
+
+    def load_replay(self, ckpt_dir: Path) -> None:
+        """Load replay buffer from checkpoint directory if present."""
+        p = ckpt_dir / "replay.json"
+        if p.exists():
+            self.replay_buffer = ReplayBuffer.load(str(p))
 
     @property
     def action_epsilon_scheduler(self) -> Scheduler:
@@ -153,24 +246,26 @@ class Agent:
     def n_td_scheduler(self) -> Scheduler:
         return self.tgc.n_td_scheduler
 
-    def _gather_last_nonpad(self, x: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
+    def _gather_last_nonpad(
+        self, x: torch.Tensor, input_ids: torch.Tensor
+    ) -> torch.Tensor:
         """
         Extracts the last non-padding token's embedding or value from the sequence.
 
         Args:
             x: Tensor of shape [B, L, D] or [B, L]
             input_ids: Tensor of shape [B, L] indicating token IDs
-        
+
         Returns:
             Tensor of shape [B, D] or [B]
         """
         B, L = input_ids.shape
         device = input_ids.device
 
-        lengths = (input_ids != self.mc.pad_token_id).sum(dim=1) # [B]
-        last_idx = (lengths - 1).clamp(min=0)                   # [B]
+        lengths = (input_ids != self.mc.pad_token_id).sum(dim=1)  # [B]
+        last_idx = (lengths - 1).clamp(min=0)  # [B]
 
-        batch_idx = torch.arange(B, device=device)              # [B]
+        batch_idx = torch.arange(B, device=device)  # [B]
 
         if x.dim() == 3:  # [B, L, D] -> [B, D]
             return x[batch_idx, last_idx, :]
@@ -221,12 +316,12 @@ class Agent:
         return self._ids_to_tokenlist(input_ids)
 
     def _truncate_to_done(
-        self, 
-        rewards: list[float], 
-        actions: list[int], 
-        dones: list[bool], 
-        states: list[Any], 
-        action_masks: list[list[int]]
+        self,
+        rewards: list[float],
+        actions: list[int],
+        dones: list[bool],
+        states: list[Any],
+        action_masks: list[list[int]],
     ) -> tuple[list[float], list[int], list[bool], list[Any], list[list[int]]]:
         if any(dones):
             t_end = dones.index(True) + 1
@@ -253,7 +348,7 @@ class Agent:
         T = rewards.shape[0]
         device, dtype = rewards.device, rewards.dtype
 
-        masks = (1.0 - dones.to(dtype)).to(device) # [T]
+        masks = (1.0 - dones.to(dtype)).to(device)  # [T]
         # values_next: [T] (shifted and zero-padded)
         values_next = torch.cat(
             [values[1:], torch.zeros(1, device=device, dtype=dtype)], dim=0
@@ -266,7 +361,7 @@ class Agent:
         for t in reversed(range(T)):
             gae = deltas[t] + self.gamma * self.lambd * gae * masks[t]
             advs[t] = gae
-        return advs # [T]
+        return advs  # [T]
 
     def _get_nTDs(
         self, rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor
@@ -301,7 +396,7 @@ class Agent:
             if boot_index < T and discount.item() != 0.0:
                 ret = ret + discount * values[boot_index]
             out[t] = ret
-        return out # [T]
+        return out  # [T]
 
     def _masked_logprob(
         self, logits: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor
@@ -316,32 +411,36 @@ class Agent:
         Returns:
             logp_all: [B]
         """
-        logits = logits.float() # [B, Out]
-        invalid = ~action_mask.to(torch.bool) # [B, Out]
+        logits = logits.float()  # [B, Out]
+        invalid = ~action_mask.to(torch.bool)  # [B, Out]
         logits = logits.masked_fill(invalid, -1e9)
-        logp_all = torch.log_softmax(logits, dim=-1) # [B, Out]
-        return logp_all.gather(-1, actions.unsqueeze(-1)).squeeze(-1) # [B]
+        logp_all = torch.log_softmax(logits, dim=-1)  # [B, Out]
+        return logp_all.gather(-1, actions.unsqueeze(-1)).squeeze(-1)  # [B]
 
     def _select_action(self, input_state: Any, action_mask: list[int]) -> int:
         with torch.no_grad():
             ids = self._state_to_ids(input_state)
-            input_tensor = torch.tensor([ids], device=self.sc.device) # [1, L]
+            input_tensor = torch.tensor([ids], device=self.sc.device)  # [1, L]
 
             with self.amp_ctx:
-                logits_all = self.policy_model_old(input_tensor) # [1, L, Out]
-            logits = self._gather_last_nonpad(logits_all, input_tensor).float()  # [1, Out]
+                logits_all = self.policy_model_old(input_tensor)  # [1, L, Out]
+            logits = self._gather_last_nonpad(
+                logits_all, input_tensor
+            ).float()  # [1, Out]
 
             mask_tensor = torch.tensor(
                 action_mask, device=self.sc.device, dtype=torch.bool
-            ) # [Out] -> [1, Out] broadcast in masked_fill if needed, but here usually 1D
+            )  # [Out] -> [1, Out] broadcast in masked_fill if needed, but here usually 1D
             logits = logits.masked_fill(~mask_tensor, -1e9)
 
-            probs = torch.softmax(logits, dim=-1) # [1, Out]
+            probs = torch.softmax(logits, dim=-1)  # [1, Out]
             action = torch.multinomial(probs, num_samples=1).item()
         return int(action)
 
     def update(
-        self, memories: Iterable[Trail], call_back: Callable[[float, float, float], None] | None = None
+        self,
+        memories: Iterable[Trail],
+        call_back: Callable[[float, float, float], None] | None = None,
     ) -> None:
         """PPO update using true minibatch size (timesteps) and gradient accumulation."""
         memories = list(memories)
@@ -355,7 +454,6 @@ class Agent:
         grad_accum_steps = int(getattr(self.tc, "grad_accum_steps", 1))
         grad_accum_steps = max(1, grad_accum_steps)
 
-        # Step alpha once per update (not per-trajectory)
         mix = float(self.alpha_scheduler.step())
 
         states_buf: list[torch.Tensor] = []
@@ -405,29 +503,36 @@ class Agent:
 
                 states_ids = [self._state_to_ids(s) for s in states]
 
-                # s_t: [T, L] (truncated to T, excluding terminal state for policy eval usually, 
+                # s_t: [T, L] (truncated to T, excluding terminal state for policy eval usually,
                 # but here s_t includes only T steps for forward pass matching rewards)
                 s_t = torch.tensor(
                     states_ids[:-1], device=self.sc.device, dtype=torch.long
                 )
-                a_t = torch.tensor(actions, device=self.sc.device, dtype=torch.long) # [T]
-                r_t = torch.tensor(rewards, device=self.sc.device, dtype=torch.float32) # [T]
-                d_t = torch.tensor(dones, device=self.sc.device, dtype=torch.bool) # [T]
+                a_t = torch.tensor(
+                    actions, device=self.sc.device, dtype=torch.long
+                )  # [T]
+                r_t = torch.tensor(
+                    rewards, device=self.sc.device, dtype=torch.float32
+                )  # [T]
+                d_t = torch.tensor(
+                    dones, device=self.sc.device, dtype=torch.bool
+                )  # [T]
                 m_t = torch.tensor(
                     action_masks, device=self.sc.device, dtype=torch.bool
-                ) # [T, Out]
+                )  # [T, Out]
 
                 with torch.no_grad():
                     with self.amp_ctx:
                         # old_logits: [T, Out]
-                        old_logits = self._gather_last_nonpad(self.policy_model_old(s_t), s_t)
+                        old_logits = self._gather_last_nonpad(
+                            self.policy_model_old(s_t), s_t
+                        )
                         # old_logp: [T]
                         old_logp = self._masked_logprob(old_logits, a_t, m_t).detach()
 
                         # old_v: [T]
                         old_v = self._gather_last_nonpad(
-                            self.value_model_old(s_t).squeeze(-1).float(), 
-                            s_t
+                            self.value_model_old(s_t).squeeze(-1).float(), s_t
                         ).detach()
 
                     # adv: [T]
@@ -449,12 +554,12 @@ class Agent:
         if not states_buf:
             return
 
-        states_all = torch.cat(states_buf, dim=0) # [N_total, L]
-        actions_all = torch.cat(actions_buf, dim=0) # [N_total]
-        masks_all = torch.cat(masks_buf, dim=0) # [N_total, Out]
-        old_logp_all = torch.cat(old_logp_buf, dim=0) # [N_total]
-        adv_all = torch.cat(adv_buf, dim=0) # [N_total]
-        target_v_all = torch.cat(target_v_buf, dim=0) # [N_total]
+        states_all = torch.cat(states_buf, dim=0)  # [N_total, L]
+        actions_all = torch.cat(actions_buf, dim=0)  # [N_total]
+        masks_all = torch.cat(masks_buf, dim=0)  # [N_total, Out]
+        old_logp_all = torch.cat(old_logp_buf, dim=0)  # [N_total]
+        adv_all = torch.cat(adv_buf, dim=0)  # [N_total]
+        target_v_all = torch.cat(target_v_buf, dim=0)  # [N_total]
 
         adv_all = (adv_all - adv_all.mean()) / (adv_all.std(unbiased=False) + 1e-8)
 
@@ -496,21 +601,27 @@ class Agent:
                     end = min(start + minibatch_size, N)
                     idx = perm[start:end]
 
-                    mb_states = states_all[idx] # [B, L]
-                    mb_actions = actions_all[idx] # [B]
-                    mb_masks = masks_all[idx] # [B, Out]
-                    mb_old_logp = old_logp_all[idx] # [B]
-                    mb_adv = adv_all[idx] # [B]
-                    mb_target_v = target_v_all[idx] # [B]
+                    mb_states = states_all[idx]  # [B, L]
+                    mb_actions = actions_all[idx]  # [B]
+                    mb_masks = masks_all[idx]  # [B, Out]
+                    mb_old_logp = old_logp_all[idx]  # [B]
+                    mb_adv = adv_all[idx]  # [B]
+                    mb_target_v = target_v_all[idx]  # [B]
 
                     with self.amp_ctx:
                         # new_logits: [B, Out]
-                        new_logits = self._gather_last_nonpad(self.policy_model(mb_states), mb_states)
+                        new_logits = self._gather_last_nonpad(
+                            self.policy_model(mb_states), mb_states
+                        )
                         # new_logp: [B]
-                        new_logp = self._masked_logprob(new_logits, mb_actions, mb_masks)
+                        new_logp = self._masked_logprob(
+                            new_logits, mb_actions, mb_masks
+                        )
 
                         # values: [B]
-                        values = self._gather_last_nonpad(self.value_model(mb_states).squeeze(-1).float(), mb_states)
+                        values = self._gather_last_nonpad(
+                            self.value_model(mb_states).squeeze(-1).float(), mb_states
+                        )
 
                     # ratios: [B]
                     ratios = torch.exp(new_logp - mb_old_logp)
@@ -532,7 +643,9 @@ class Agent:
                     loss_total = loss_policy_w + loss_value_w
 
                     if self.sc.amp_enable:
-                        self.amp_scaler.scale(loss_total / float(grad_accum_steps)).backward()
+                        self.amp_scaler.scale(
+                            loss_total / float(grad_accum_steps)
+                        ).backward()
                     else:
                         (loss_total / float(grad_accum_steps)).backward()
                     micro_step += 1
@@ -583,13 +696,18 @@ class Agent:
             print(f"AVR approx KL: {sum(kls) / len(kls):.6f}")
 
     async def get_memory_async(
-        self, env: AsyncMahjongEnv, call_back: Callable[[list[float]], None] | None = None
+        self,
+        worker_idx: int,
+        env: AsyncMahjongEnv,
+        call_back: Callable[[list[float]], None] | None = None,
     ) -> None:
         """Collect one episode of trajectories asynchronously."""
         memories = [Trail() for _ in range(4)]
 
         # Await the environment response
-        state, reward, done, info = await env.reset(self.rng.randint(0, 1_000_000_000))
+        new_seed = self.rng.randint(0, 1_000_000_000)
+        self.worker_seeds[worker_idx] = new_seed
+        state, reward, done, info = await env.reset(new_seed)
 
         no_memory_index = []
         last_hands = [None] * 4
@@ -635,7 +753,7 @@ class Agent:
                     if len(memory.rewards) == 0:
                         no_memory_index.append(idx)
                         continue
-                    hand = last_hands[idx] if last_hands[idx] is not None else [0]*34 
+                    hand = last_hands[idx] if last_hands[idx] is not None else [0] * 34
                     memory.states.append(self._get_pad_tokens(hand, terminal_hist))
                     memory.dones[-1] = True
                 break
@@ -651,12 +769,20 @@ class Agent:
                     self.max_trail_len = len(memory.states)
                 self.replay_buffer.add(memory)
 
-    async def _worker_task(self, worker: AsyncMahjongEnv, count: int, call_back: Callable | None):
+    async def _worker_task(
+        self,
+        worker_idx: int,
+        worker: AsyncMahjongEnv,
+        count: int,
+        call_back: Callable | None,
+    ):
         """Helper to let one worker run multiple games sequentially."""
         for _ in range(count):
-            await self.get_memory_async(worker, call_back)
+            await self.get_memory_async(worker_idx, worker, call_back)
 
-    def get_memory_batch(self, call_back: Callable[[list[float]], None] | None = None) -> None:
+    def get_memory_batch(
+        self, call_back: Callable[[list[float]], None] | None = None
+    ) -> None:
         """Collect multiple episodes in parallel."""
         total_games = int(self.evc.memget_num_per_update / 4)
 
@@ -668,7 +794,7 @@ class Agent:
         for i, worker in enumerate(self.workers):
             count = base_count + (1 if i < remainder else 0)
             if count > 0:
-                tasks.append(self._worker_task(worker, count, call_back))
+                tasks.append(self._worker_task(i, worker, count, call_back))
 
         async def _batch_runner():
             await asyncio.gather(*tasks)
@@ -680,219 +806,3 @@ class Agent:
         if hasattr(self, "workers"):
             for w in self.workers:
                 w.close()
-
-
-class Display:
-    def __init__(self, config: Config) -> None:
-        self.config = config
-        self.rewards: list[float] = []
-        self.trail_rewards: list[float] = []
-        self.losses: list[float] = []
-        self.value_losses: list[float] = []
-        self.policy_losses: list[float] = []
-
-        self.avr_reward = 0.0
-        self.max_reward = 0.0
-        self.avr_reward_per_trail = 0.0
-        self.max_reward_per_trail = 0.0
-        self.reward_update_time = 0
-
-        self.step = 0
-        self.writer = SummaryWriter(config.system.log_dir)
-
-        self.reward_stats = RunningStats()
-        self.trail_reward_stats = RunningStats()
-        self.ci_z = (
-            z_from_confidence(config.evalu.ci_confidence)
-            if config.evalu.ci_enabled
-            else 0.0
-        )
-
-        self.avr_reward_low = 0.0
-        self.avr_reward_high = 0.0
-        self.avr_trail_reward_low = 0.0
-        self.avr_trail_reward_high = 0.0
-
-    def reward_update(self, reward_trail: list[float]) -> None:
-        for r in reward_trail:
-            r = float(r)
-            self.rewards.append(r)
-            self.reward_stats.update(r)
-
-        trail_sum = float(sum(reward_trail))
-        self.trail_rewards.append(trail_sum)
-        self.trail_reward_stats.update(trail_sum)
-
-        self.reward_update_time += 1
-
-        self.avr_reward = self.reward_stats.mean
-        self.max_reward = (
-            max(self.max_reward, max(reward_trail)) if self.rewards else 0.0
-        )
-        self.avr_reward_per_trail = self.trail_reward_stats.mean
-        self.max_reward_per_trail = (
-            max(self.max_reward_per_trail, trail_sum) if self.trail_rewards else 0.0
-        )
-
-        if self.config.evalu.ci_enabled:
-            self.avr_reward_low, self.avr_reward_high, _ = normal_mean_bounds(
-                self.avr_reward, self.reward_stats.var, self.reward_stats.n, self.ci_z
-            )
-            self.avr_trail_reward_low, self.avr_trail_reward_high, _ = (
-                normal_mean_bounds(
-                    self.avr_reward_per_trail,
-                    self.trail_reward_stats.var,
-                    self.trail_reward_stats.n,
-                    self.ci_z,
-                )
-            )
-
-        display_interval = int(
-            self.config.evalu.memget_num_per_update / self.config.evalu.n_display
-        )
-        if self.reward_update_time % display_interval == 0:
-            if self.config.evalu.ci_enabled:
-                print(
-                    f"Collected {self.reward_update_time} trails in episode {self.step + 1}\n"
-                    f"AVR reward: {self.avr_reward:.4f}  "
-                    f"[{self.avr_reward_low:.4f}, {self.avr_reward_high:.4f}] (z={self.ci_z:.3f})\n"
-                    f"MAX reward: {self.max_reward:.4f}\n"
-                    f"AVR trail reward: {self.avr_reward_per_trail:.4f}  "
-                    f"[{self.avr_trail_reward_low:.4f}, {self.avr_trail_reward_high:.4f}] (z={self.ci_z:.3f})\n"
-                    f"MAX trail reward: {self.max_reward_per_trail:.4f}"
-                )
-            else:
-                print(
-                    f"Collected {self.reward_update_time} trails in episode {self.step + 1}\n"
-                    f"AVR reward: {self.avr_reward:.4f}\n"
-                    f"MAX reward: {self.max_reward:.4f}\n"
-                    f"AVR trail reward: {self.avr_reward_per_trail:.4f}\n"
-                    f"MAX trail reward: {self.max_reward_per_trail:.4f}"
-                )
-
-    def loss_update(self, loss: float, value_loss: float, policy_loss: float) -> None:
-        self.losses.append(loss)
-        self.value_losses.append(value_loss)
-        self.policy_losses.append(policy_loss)
-
-    def reset(self) -> None:
-        if self.losses:
-            self.writer.add_scalar(
-                "Loss/loss", sum(self.losses) / len(self.losses), self.step
-            )
-            self.writer.add_scalar(
-                "Loss/value loss",
-                sum(self.value_losses) / len(self.value_losses),
-                self.step,
-            )
-            self.writer.add_scalar(
-                "Loss/policy loss",
-                sum(self.policy_losses) / len(self.policy_losses),
-                self.step,
-            )
-
-        self.writer.add_scalar("AVR Reward", self.avr_reward, self.step)
-        self.writer.add_scalar("AVR Trail Reward", self.avr_reward_per_trail, self.step)
-
-        if self.config.evalu.ci_enabled:
-            low, high, se = normal_mean_bounds(
-                self.avr_reward, self.reward_stats.var, self.reward_stats.n, self.ci_z
-            )
-            self.writer.add_scalar("AVR Reward CI/low", low, self.step)
-            self.writer.add_scalar("AVR Reward CI/high", high, self.step)
-            self.writer.add_scalar("AVR Reward CI/se", se, self.step)
-
-            tlow, thigh, tse = normal_mean_bounds(
-                self.avr_reward_per_trail,
-                self.trail_reward_stats.var,
-                self.trail_reward_stats.n,
-                self.ci_z,
-            )
-            self.writer.add_scalar("AVR Trail Reward CI/low", tlow, self.step)
-            self.writer.add_scalar("AVR Trail Reward CI/high", thigh, self.step)
-            self.writer.add_scalar("AVR Trail Reward CI/se", tse, self.step)
-
-        self.step += 1
-
-        self.rewards = []
-        self.trail_rewards = []
-        self.losses = []
-        self.value_losses = []
-        self.policy_losses = []
-
-        self.avr_reward = 0
-        self.max_reward = 0
-        self.avr_reward_per_trail = 0
-        self.max_reward_per_trail = 0
-        self.reward_update_time = 0
-
-        self.reward_stats.reset()
-        self.trail_reward_stats.reset()
-
-
-if __name__ == "__main__":
-    time_start = time.time()
-
-    config = get_default_config()
-    assert config.evalu.memget_num_per_update % 4 == 0
-
-    set_seeds(config.env.init_env_seed)
-
-    try:
-        agent = Agent(config)
-        display = Display(config)
-
-        current_max = -1e9
-        first_collect = True
-
-        for episode in range(config.training.episodes):
-            agent.get_memory_batch(display.reward_update)
-
-            if config.verbose_first and first_collect:
-                sample_actions = agent.replay_buffer.sample(1)[0].actions
-                print("First collected trajectory:")
-                for a in sample_actions:
-                    print(action_to_str(a))
-                first_collect = False
-
-            if not config.evalu.eval_mode:
-                batch = agent.replay_buffer.sample(config.training.sample_trail_count)
-                agent.update(batch, display.loss_update)
-
-                print("Saving")
-                save_file(
-                    agent.policy_model_old.state_dict(),
-                    f"{config.evalu.path}_policy.safetensors",
-                )
-                save_file(
-                    agent.value_model_old.state_dict(),
-                    f"{config.evalu.path}_value.safetensors",
-                )
-
-                if display.avr_reward_per_trail >= current_max:
-                    save_file(
-                        agent.policy_model_old.state_dict(),
-                        f"{config.system.path_max}_policy.safetensors",
-                    )
-                    save_file(
-                        agent.value_model_old.state_dict(),
-                        f"{config.system.path_max}_value.safetensors",
-                    )
-                    current_max = display.avr_reward_per_trail
-
-                agent.replay_buffer.save(config.system.replay_buffer_file)
-
-                print("Saved")
-                display.reset()
-
-                agent.action_epsilon_scheduler.step()
-                agent.n_td_scheduler.step()
-            else:
-                sys.exit()
-
-    except (KeyboardInterrupt, SystemExit):
-        print("Exit")
-    except BaseException:
-        Console().print_exception(show_locals=True)
-
-    print(f"Time Usage: {(time.time() - time_start):.4f}")

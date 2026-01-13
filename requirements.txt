@@ -3,3 +3,4 @@ mahjong
 tensorboard
 safetensors
 pydantic
+rich

@@ -51,7 +51,9 @@ class MahjongEnv:
         - action id in [0..45]
     """
 
-    def __init__(self, seed: Optional[int] = None, reward: Optional[RewardConfig] = None) -> None:
+    def __init__(
+        self, seed: Optional[int] = None, reward: Optional[RewardConfig] = None
+    ) -> None:
         self.rng = random.Random(seed)
         self.bus = EventBus()
         self.reward = reward or RewardConfig()
@@ -67,7 +69,7 @@ class MahjongEnv:
         self.done: bool = False
         self.pending_done: bool = False
         self.seat_now: int = 0
-        self.kang_count: int = 0
+        self.kan_count: int = 0
         self.claiming_from: int = 0
 
         self.pending_claims: list[PendingClaim] = []
@@ -86,7 +88,7 @@ class MahjongEnv:
         self.done = False
         self.pending_done = False
         self.seat_now = 0
-        self.kang_count = 0
+        self.kan_count = 0
         self.claiming_from = 0
         self.pending_claims = []
         self.history_tokens = TokenList()
@@ -238,7 +240,7 @@ class MahjongEnv:
             ) + self._after_meld_requires_discard(claimant)
 
         if action == KAN_OPEN:
-            self.kang_count += 1
+            self.kan_count += 1
             self.players[claimant].hand.remove(discard_tile, 3)
             self.players[claimant].hand.add_open_meld_kan(discard_tile)
             rin = self.wall.draw_rinshan()
@@ -284,7 +286,7 @@ class MahjongEnv:
             win_tile34=last,
             melds=p.hand.melds,
             dora_indicators_136=self.wall.dora_indicators_136(
-                kang_count=self.kang_count,
+                kan_count=self.kan_count,
                 end=True,
                 riichi=p.state.riichi,
             ),
@@ -334,7 +336,7 @@ class MahjongEnv:
             if not candidates:
                 raise ValueError("ankan chosen but no 4-of-a-kind in hand")
             tile = candidates[0]
-            self.kang_count += 1
+            self.kan_count += 1
             p.hand.remove(tile, 4)
             p.hand.add_closed_kan(tile)
             rin = self.wall.draw_rinshan()
@@ -351,7 +353,7 @@ class MahjongEnv:
                             continue
                         p.hand.remove(t, 1)
                         p.hand.upgrade_pon_to_kan(t)
-                        self.kang_count += 1
+                        self.kan_count += 1
                         rin = self.wall.draw_rinshan()
                         p.draw(rin)
                         self.force_discard_only = True
@@ -399,7 +401,7 @@ class MahjongEnv:
                     win_tile34=tile34,
                     melds=claimant.hand.melds,
                     dora_indicators_136=self.wall.dora_indicators_136(
-                        kang_count=self.kang_count,
+                        kan_count=self.kan_count,
                         end=True,
                         riichi=self.players[discarder].state.riichi,
                     ),
@@ -648,7 +650,7 @@ class MahjongEnv:
 
         assert 0 <= self.seat_now < NUM_SEATS
         assert 0 <= self.claiming_from < NUM_SEATS
-        assert 0 <= self.kang_count <= 4
+        assert 0 <= self.kan_count <= 4
 
         # riichi consistency
         for p in self.players:
@@ -677,7 +679,7 @@ class MahjongEnv:
                 assert c.claimant != discarder
                 assert 0 <= c.claimant < NUM_SEATS
                 assert 0 <= c.discard_tile34 < 34
-                assert 1 <= c.action <= ACTIONS_PER_SEAT
+                assert 0 <= c.action <= ACTIONS_PER_SEAT
                 if c.action in (CHI_UP, CHI_MID, CHI_DOWN):
                     assert c.chi_sequence is not None
                     assert len(c.chi_sequence) == 3
