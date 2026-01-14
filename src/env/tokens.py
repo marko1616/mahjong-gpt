@@ -18,7 +18,6 @@ Vocab layout (total = 46 + 34 + 4 + 2 = 86):
  85           : [PAD]
 """
 
-from __future__ import annotations
 from pydantic import BaseModel, Field, model_validator, model_serializer
 from typing import Iterator, Any
 from collections.abc import Iterable

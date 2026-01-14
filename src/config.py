@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-import datetime
 import json
 from typing import Any, Dict, Optional
 
@@ -14,8 +11,20 @@ from pydantic import (
     field_validator,
 )
 
-from schedulers import Scheduler, SchedulerConfig, ConstantScheduler
-from env.constants import PAD_ID
+from .schedulers import Scheduler, SchedulerConfig, ConstantScheduler
+from .env.constants import PAD_ID
+
+
+class RewardConfig(BaseModel):
+    """
+    All rewards/penalties for the environment.
+    """
+
+    reward_weight_shanten: float = Field(default=30.0)
+    penalty_ava_num: float = Field(default=1.2)
+    score_weight: float = Field(default=0.1)
+    reward_riichi: float = Field(default=10.0)
+    reward_open_tanyao: float = Field(default=-5.0)
 
 
 class TrainingConfig(BaseModel):
@@ -94,7 +103,7 @@ class TargetConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
     target: str = "N_step_TD"
-    lambd: float = 0.80
+    lambd: float = 0.50
     gamma: float = 0.95
 
     alpha_config: SchedulerConfig = Field(
@@ -238,6 +247,7 @@ class Config(BaseModel):
     target: TargetConfig = Field(default_factory=TargetConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     system: SystemConfig = Field(default_factory=SystemConfig)
+    reward: RewardConfig = Field(default_factory=RewardConfig)
 
     # Keep your original name `evalu`, but accept `eval=...` for compatibility.
     evalu: EvalConfig = Field(default_factory=EvalConfig, alias="eval")

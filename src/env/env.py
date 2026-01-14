@@ -5,6 +5,8 @@ import random
 from mahjong.shanten import Shanten
 from mahjong.hand_calculating.hand import HandCalculator
 
+from ..config import RewardConfig
+
 from .constants import (
     ACTIONS_PER_SEAT,
     NUM_SEATS,
@@ -24,7 +26,6 @@ from .constants import (
     PLAYER_TOKENS,
 )
 from .event_bus import EventBus
-from .reward_config import RewardConfig
 from .tiles import tile34_to_str
 from .wall import MahjongWall
 from .player import MahjongPlayer
@@ -52,11 +53,11 @@ class MahjongEnv:
     """
 
     def __init__(
-        self, seed: Optional[int] = None, reward: Optional[RewardConfig] = None
+        self, seed: Optional[int] = None, rc: Optional[RewardConfig] = None
     ) -> None:
         self.rng = random.Random(seed)
         self.bus = EventBus()
-        self.reward = reward or RewardConfig()
+        self.rc = rc or RewardConfig()
 
         self.shanten_calc = Shanten()
         self.score_calc = HandCalculator()
@@ -208,7 +209,7 @@ class MahjongEnv:
                 tile34=chosen.discard_tile34,
             )
             score_main = float(chosen.score_result.cost["main"])
-            reward = score_main * self.reward.score_weight
+            reward = score_main * self.rc.score_weight
 
             self._resolve_claim_queue_progress()
             if self.pending_done and not any(
@@ -229,14 +230,14 @@ class MahjongEnv:
             self.players[claimant].hand.remove(b, 1)
             self.players[claimant].hand.add_open_meld_chi(seq)
             return float(
-                self.reward.reward_open_tanyao
+                self.rc.reward_open_tanyao
             ) + self._after_meld_requires_discard(claimant)
 
         if action == PON:
             self.players[claimant].hand.add_open_meld_pon(discard_tile)
             self.players[claimant].hand.remove(discard_tile, 2)
             return float(
-                self.reward.reward_open_tanyao
+                self.rc.reward_open_tanyao
             ) + self._after_meld_requires_discard(claimant)
 
         if action == KAN_OPEN:
@@ -246,7 +247,7 @@ class MahjongEnv:
             rin = self.wall.draw_rinshan()
             self.players[claimant].draw(rin)
             return float(
-                self.reward.reward_open_tanyao
+                self.rc.reward_open_tanyao
             ) + self._after_meld_requires_discard(claimant)
 
         raise ValueError(f"unexpected claim action: {action}")
@@ -294,15 +295,11 @@ class MahjongEnv:
             has_open_tanyao=p.hand.has_open_tanyao,
         )
         if result.error:
-            if result.error == "no_yaku":
-                self.done = True
-                self.bus.publish("win_tsumo", seat=seat, tile34=last)
-                return self.reward.reward_no_yaku
             raise ValueError(f"tsumo has error: {result.error}")
 
         self.done = True
         self.bus.publish("win_tsumo", seat=seat, tile34=last)
-        return float(result.cost["main"]) * self.reward.score_weight
+        return float(result.cost["main"]) * self.rc.score_weight
 
     def _handle_riichi(self) -> float:
         """Process a riichi declaration."""
@@ -319,7 +316,7 @@ class MahjongEnv:
         p.state.riichi = True
         p.state.riichi_lock = False
         self.bus.publish("riichi_declared", seat=seat)
-        return float(self.reward.reward_riichi)
+        return float(self.rc.reward_riichi)
 
     def _handle_self_kan(self, action: int) -> float:
         """
@@ -510,7 +507,7 @@ class MahjongEnv:
                 reward_update += delta
             else:
                 reward_update += delta * 2
-            reward_update *= self.reward.reward_weight_shanten
+            reward_update *= self.rc.reward_weight_shanten
 
         if (
             (p.state.last_available is not None)
@@ -521,7 +518,7 @@ class MahjongEnv:
             if ava <= p.state.last_available:
                 reward_update += delta
             else:
-                reward_update += delta * self.reward.penalty_ava_num
+                reward_update += delta * self.rc.penalty_ava_num
 
         p.state.last_shanten = sh
         p.state.last_available = ava
@@ -557,7 +554,20 @@ class MahjongEnv:
             return mask
 
         if p.hand.shanten(self.shanten_calc) == -1:
-            mask[TSUMO] = 1
+            result = p.hand.estimate_value(
+                calculator=self.score_calc,
+                win_tile34=p.state.last_drawn,
+                melds=p.hand.melds,
+                dora_indicators_136=self.wall.dora_indicators_136(
+                    kan_count=self.kan_count,
+                    end=True,
+                    riichi=p.state.riichi,
+                ),
+                is_riichi=p.state.riichi,
+                has_open_tanyao=p.hand.has_open_tanyao,
+            )
+            if result.error != self.score_calc.ERR_NO_YAKU:
+                mask[TSUMO] = 1
 
         if (
             (not p.state.riichi)

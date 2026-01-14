@@ -6,8 +6,8 @@ This project implements a Riichi Mahjong intelligent agent based on reinforcemen
 
 ## Requirements
 
-- Python 3.11 or higher
-- PyTorch 2.0 or higher
+- Python 3.14 or higher
+- PyTorch 2.9 or higher
 
 ## Installation
 
@@ -33,7 +33,7 @@ This project implements a Riichi Mahjong intelligent agent based on reinforcemen
 
 1. Start training:
    ```bash
-   python src/ppo.py
+   python -m src.trainer
    ```
    This will start the agent training process. Training logs and model weights will be automatically saved to the specified directories.
 
@@ -44,34 +44,36 @@ This project implements a Riichi Mahjong intelligent agent based on reinforcemen
    ```
 
 3. Configuration:
-   Modify `src/config.py` to adjust hyperparameters. The configuration uses dataclasses for type-safe settings:
+   Modify `src/config.py` to adjust hyperparameters. The configuration uses Pydantic for type-safe settings:
    ```python
-   from config import get_default_config, get_custom_config
+   from src.config import get_default_config, get_eval_config, Config
    
    # Use default configuration
    config = get_default_config()
    
-   # Or customize
-   config = get_custom_config(
-       episodes=200,
-       lr=1e-6,
-       batch_size=16,
-       device="cuda:0"
-   )
+   # Get evaluation mode configuration
+   config = get_eval_config()
+   
+   # Or load custom configuration from JSON
+   config = Config.from_json(json_string)
    ```
 
 ## Project Structure
 
 ```
 src/
-├── ppo.py              # PPO algorithm implementation and training entry point
+├── trainer.py          # Training entry point
+├── agent.py            # PPO algorithm agent implementation
 ├── model.py            # GPT model definition (based on minGPT)
-├── config.py           # Hyperparameter configuration (dataclass-based)
+├── config.py           # Hyperparameter configuration (Pydantic-based)
 ├── schedulers.py       # Learning rate and parameter schedulers
+├── schemes.py          # Data structures (Trail, ReplayBuffer, etc.)
+├── recorder.py         # Training metrics recording and logging
+├── ckpt_manager.py     # Checkpoint manager (supports resumable training)
 ├── utils/
+│   ├── ckpt_utils.py   # Checkpoint utilities (RNG state, atomic writes)
 │   └── stats_utils.py  # Statistical utilities (CI bounds, running stats)
 └── env/
-    ├── __init__.py
     ├── env.py          # Main Mahjong environment implementation
     ├── constants.py    # Action space constants
     ├── tiles.py        # Tile conversion utilities
@@ -80,9 +82,16 @@ src/
     ├── player.py       # Player state management
     ├── wall.py         # Tile wall distribution
     ├── event_bus.py    # Pub-sub event system
-    ├── reward_config.py# Reward configuration (pydantic-based)
     └── worker.py       # Async multiprocessing environment wrapper
 ```
+
+## Checkpointing & Resumable Training
+
+The project supports a complete checkpointing mechanism that allows resuming training from any checkpoint:
+
+- Checkpoints save model weights, optimizer states, RNG states, and scheduler states
+- Use `CkptManager` to manage multi-pass training
+- Supports atomic writes to prevent checkpoint corruption from crashes
 
 ## Action Space
 

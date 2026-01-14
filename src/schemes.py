@@ -5,7 +5,7 @@ import gzip
 import random
 
 
-from env.tokens import (
+from .env.tokens import (
     TokenList,
 )
 

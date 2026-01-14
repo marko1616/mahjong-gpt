@@ -1,21 +1,19 @@
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Optional
 
 import torch
 
-from ckpt_manager import CkptManager, RunManifest, PassSpec
-from utils.ckpt_utils import (
+from .ckpt_manager import CkptManager, RunManifest, PassSpec
+from .utils.ckpt_utils import (
     EpisodeCheckpointWriter,
     export_scheduler_states,
     get_rng_state,
     set_rng_state,
 )
 
-from agent import Agent
-from recorder import Recorder
-from config import get_default_config
+from .agent import Agent
+from .recorder import Recorder
+from .config import get_default_config
 
 
 class TrainerRunner:
@@ -101,18 +99,20 @@ class TrainerRunner:
             agent.action_epsilon_scheduler.step()
             agent.n_td_scheduler.step()
 
+            episode_metrics = recorder.reset()
+            state.best_metric = max(
+                state.best_metric, episode_metrics.avr_reward_per_trail
+            )
             if (ep % spec.save_every) == 0:
                 self._save_episode_checkpoint(
                     pass_id=pass_id,
                     episode=ep,
                     agent=agent,
-                    recorder=recorder,
+                    episode_metrics=episode_metrics,
                 )
                 state.last_checkpoint_dir = str(
                     self.store.episode_ckpt_dir(pass_id, ep)
                 )
-            else:
-                recorder.reset()
 
             self.store.update_pass_state(manifest, pass_id, state)
 
@@ -120,7 +120,7 @@ class TrainerRunner:
         self.store.update_pass_state(manifest, pass_id, state)
 
     def _save_episode_checkpoint(
-        self, pass_id: int, episode: int, agent, recorder
+        self, pass_id: int, episode: int, agent, episode_metrics
     ) -> None:
         """Save a fully resumable episode checkpoint."""
         ckpt_dir = self.store.episode_ckpt_dir(pass_id, episode)
@@ -135,7 +135,6 @@ class TrainerRunner:
             }
         )
 
-        episode_metrics = recorder.reset()
         meta = {
             "pass_id": pass_id,
             "episode": episode,
@@ -162,7 +161,7 @@ class TrainerRunner:
 
 
 def main() -> None:
-    ckpt_manager = CkptManager(Path("/mnt/runs"), "model-01")
+    ckpt_manager = CkptManager(Path("./runs"), "model-00")
     config = get_default_config()
     total_episodes = config.training.pass_n_episodes
     train_pass = PassSpec(

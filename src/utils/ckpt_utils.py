@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import os
 import random
@@ -8,7 +6,7 @@ from typing import Any, Dict
 
 import torch
 
-from schedulers import Scheduler
+from ..schedulers import Scheduler
 
 
 def get_rng_state() -> Dict[str, Any]:

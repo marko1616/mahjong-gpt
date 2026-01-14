@@ -2,11 +2,12 @@ from pathlib import Path
 
 from typing import Optional
 from pydantic import BaseModel
-from utils import RunningStats, z_from_confidence, normal_mean_bounds
-from config import Config
 from rich import print
 
 from torch.utils.tensorboard import SummaryWriter
+
+from .utils import RunningStats, z_from_confidence, normal_mean_bounds
+from .config import Config
 
 
 class StepMetrics(BaseModel):

@@ -6,8 +6,8 @@
 
 ## 环境需求
 
-- Python 3.11 或更高版本
-- PyTorch 2.0 或更高版本
+- Python 3.14 或更高版本
+- PyTorch 2.9 或更高版本
 
 ## 安装
 
@@ -33,7 +33,7 @@
 
 1. 启动训练：
    ```bash
-   python src/ppo.py
+   python -m src.trainer
    ```
    这将启动代理的训练过程，训练日志和模型权重会自动保存在指定的目录中。
 
@@ -44,34 +44,36 @@
    ```
 
 3. 配置参数：
-   修改 `src/config.py` 来调整超参数。配置使用 dataclass 实现类型安全的设置：
+   修改 `src/config.py` 来调整超参数。配置使用 Pydantic 实现类型安全的设置：
    ```python
-   from config import get_default_config, get_custom_config
+   from src.config import get_default_config, get_eval_config, Config
    
    # 使用默认配置
    config = get_default_config()
    
-   # 或自定义配置
-   config = get_custom_config(
-       episodes=200,
-       lr=1e-6,
-       batch_size=16,
-       device="cuda:0"
-   )
+   # 获取评估模式配置
+   config = get_eval_config()
+   
+   # 或从JSON加载自定义配置
+   config = Config.from_json(json_string)
    ```
 
 ## 项目结构
 
 ```
 src/
-├── ppo.py              # PPO算法实现和训练入口
+├── trainer.py          # 训练入口
+├── agent.py            # PPO算法智能体实现
 ├── model.py            # GPT模型定义（基于minGPT）
-├── config.py           # 超参数配置（基于dataclass）
+├── config.py           # 超参数配置（基于Pydantic）
 ├── schedulers.py       # 学习率和参数调度器
+├── schemes.py          # 数据结构定义（Trail、ReplayBuffer等）
+├── recorder.py         # 训练指标记录与日志
+├── ckpt_manager.py     # 检查点管理器（支持断点续训）
 ├── utils/
+│   ├── ckpt_utils.py   # 检查点工具（RNG状态、原子写入）
 │   └── stats_utils.py  # 统计工具（置信区间、滚动统计）
 └── env/
-    ├── __init__.py
     ├── env.py          # 麻将环境主实现
     ├── constants.py    # 动作空间常量
     ├── tiles.py        # 牌面转换工具
@@ -80,9 +82,16 @@ src/
     ├── player.py       # 玩家状态管理
     ├── wall.py         # 牌山分发
     ├── event_bus.py    # 发布-订阅事件系统
-    ├── reward_config.py# 奖励配置（基于pydantic）
     └── worker.py       # 异步多进程环境封装
 ```
+
+## 检查点与断点续训
+
+项目支持完整的检查点机制，可以在训练中断后从任意检查点恢复：
+
+- 检查点保存模型权重、优化器状态、RNG状态和调度器状态
+- 使用 `CkptManager` 管理多轮训练（Pass）
+- 支持原子写入，防止因崩溃导致的检查点损坏
 
 ## 动作空间
 

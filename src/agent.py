@@ -22,14 +22,14 @@ from torch.amp import autocast, GradScaler
 
 from safetensors.torch import load_file, save_file
 
-from env.worker import AsyncMahjongEnv
+from .env.worker import AsyncMahjongEnv
 
-from env.tokens import TokenList, SEP_ID, HAND_MIN
+from .env.tokens import TokenList, SEP_ID, HAND_MIN
 
-from model import GPTModel
-from config import Config
-from schedulers import Scheduler
-from schemes import Trail, ReplayBuffer
+from .model import GPTModel
+from .config import Config
+from .schedulers import Scheduler
+from .schemes import Trail, ReplayBuffer
 
 
 class Agent:
@@ -112,7 +112,8 @@ class Agent:
             self.rng.randint(0, 1_000_000_000) for i in range(self.worker_count)
         ]
         self.workers = [
-            AsyncMahjongEnv(seed=self.worker_seeds[i]) for i in range(self.worker_count)
+            AsyncMahjongEnv(seed=self.worker_seeds[i], reward_config=self.config.reward)
+            for i in range(self.worker_count)
         ]
         print(f"Initialized {self.worker_count} async environment workers.")
 
@@ -222,7 +223,10 @@ class Agent:
     def restore_workers_from_seeds(self, seeds: list[int]) -> None:
         """Recreate async environment workers from saved seeds."""
         self.worker_seeds = list(seeds)
-        self.workers = [AsyncMahjongEnv(seed=s) for s in self.worker_seeds]
+        self.workers = [
+            AsyncMahjongEnv(seed=s, reward_config=self.config.reward)
+            for s in self.worker_seeds
+        ]
 
     def save_replay(self, ckpt_dir: Path) -> None:
         """Save replay buffer into checkpoint directory."""

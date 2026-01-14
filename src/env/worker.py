@@ -1,7 +1,9 @@
 import multiprocessing as mp
 import asyncio
 from typing import Optional, Tuple, Dict
-from env import MahjongEnv
+
+from .env import MahjongEnv
+from ..config import RewardConfig
 
 # Command Protocol
 CMD_RESET = 0
@@ -9,12 +11,11 @@ CMD_STEP = 1
 CMD_CLOSE = 2
 
 
-def _worker_loop(pipe, seed: int):
+def _worker_loop(pipe, seed: int, reward_config: RewardConfig):
     """
     Independent worker process loop.
     """
-    env = MahjongEnv(seed=seed)
-
+    env = MahjongEnv(seed=seed, rc=reward_config)
     try:
         while True:
             cmd, data = pipe.recv()
@@ -37,11 +38,11 @@ class AsyncMahjongEnv:
     Asynchronous proxy for MahjongEnv.
     """
 
-    def __init__(self, seed: int):
+    def __init__(self, seed: int, reward_config: RewardConfig) -> None:
         self.ctx = mp.get_context("spawn")
         self.parent_conn, self.child_conn = self.ctx.Pipe()
         self.process = self.ctx.Process(
-            target=_worker_loop, args=(self.child_conn, seed)
+            target=_worker_loop, args=(self.child_conn, seed, reward_config)
         )
         self.process.start()
 
