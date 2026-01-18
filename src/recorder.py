@@ -313,15 +313,8 @@ class Recorder:
         self.last_episode_metrics = episode_data
         self._log_to_jsonl(self.episode_log_path, episode_data)
 
-        # Update log paths for next episode
-        self.step_log_path = (
-            self.log_dir / f"step_metrics_episode_{self.episode_count}.jsonl"
-        )
-        self.trail_log_path = (
-            self.log_dir / f"trail_metrics_episode_{self.episode_count}.jsonl"
-        )  # Update trail log path
-
         self.episode_count += 1
+        self._set_episode_paths(self.episode_count)
 
         self.rewards = []
         self.trail_rewards = []

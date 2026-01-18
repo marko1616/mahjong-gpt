@@ -3,7 +3,7 @@ from typing import Optional
 
 import torch
 
-from .ckpt_manager import CkptManager, RunManifest, PassSpec
+from .ckpt_manager import CkptManager, RunManifest
 from .utils.ckpt_utils import (
     EpisodeCheckpointWriter,
     export_scheduler_states,
@@ -13,7 +13,6 @@ from .utils.ckpt_utils import (
 
 from .agent import Agent
 from .recorder import Recorder
-from .config import get_default_config
 
 
 class TrainerRunner:
@@ -71,8 +70,40 @@ class TrainerRunner:
         agent = Agent(config)
         recorder = Recorder(config, self.store.logs_dir(pass_id))
 
+        # If this is a new pass with init_from_*, bootstrap from source checkpoint.
+        if spec.init_from_pass_id is not None and latest_ep is None:
+            src_pass = spec.init_from_pass_id
+            src_ep = spec.init_from_episode
+            if src_ep is None:
+                src_ep = self._find_latest_checkpoint_episode(src_pass)
+                if src_ep is None:
+                    raise RuntimeError(f"No checkpoint found in source pass {src_pass}")
+
+            print(
+                f"Bootstrapping pass {pass_id} from pass {src_pass}, episode {src_ep}"
+            )
+            src_dir = self.store.episode_ckpt_dir(src_pass, src_ep)
+            meta = self._load_json(src_dir / "meta.json")
+
+            # always load weights
+            agent.load_weights(src_dir)
+
+            if spec.init_mode == "full":
+                rng = torch.load(src_dir / "rng.pt", weights_only=False)
+                set_rng_state(rng)
+                agent.load_optim_state(
+                    torch.load(src_dir / "optim.pt", weights_only=False)
+                )
+                agent.replay_buffer.load(str(src_dir / "replay.json"))
+                agent.restore_scheduler_states(meta["scheduler_states"])
+
+            # new pass starts at episode 0
+            start_episode = 0
+            recorder.seek(start_episode, overwrite_current_episode_files=True)
+
         # Restore checkpoint if exists.
         if latest_ep is not None:
+            print("Resuming from pass {}, episode {}".format(pass_id, latest_ep))
             ckpt_dir = self.store.episode_ckpt_dir(pass_id, latest_ep)
             meta = self._load_json(ckpt_dir / "meta.json")
             rng = torch.load(ckpt_dir / "rng.pt", weights_only=False)
@@ -84,7 +115,7 @@ class TrainerRunner:
             )
             agent.replay_buffer.load(str(ckpt_dir / "replay.json"))
             agent.restore_scheduler_states(meta["scheduler_states"])
-            recorder.seek(latest_ep, overwrite_current_episode_files=True)
+            recorder.seek(start_episode, overwrite_current_episode_files=True)
 
         # Training loop.
         for ep in range(start_episode, spec.total_episodes):
@@ -103,7 +134,8 @@ class TrainerRunner:
             state.best_metric = max(
                 state.best_metric, episode_metrics.avr_reward_per_trail
             )
-            if (ep % spec.save_every) == 0:
+            is_last_episode = ep == spec.total_episodes - 1
+            if (ep % spec.save_every) == 0 or is_last_episode:
                 self._save_episode_checkpoint(
                     pass_id=pass_id,
                     episode=ep,
@@ -158,25 +190,3 @@ class TrainerRunner:
 
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-
-
-def main() -> None:
-    ckpt_manager = CkptManager(Path("./runs"), "model-00")
-    config = get_default_config()
-    total_episodes = config.training.pass_n_episodes
-    train_pass = PassSpec(
-        pass_id=0,
-        name="main",
-        config=config,
-        total_episodes=total_episodes,
-        save_every=10,
-        eval_every=0,
-        notes="First pass",
-    )
-    manifest = ckpt_manager.init_new(train_pass, notes="First run")
-    trainer = TrainerRunner(ckpt_manager)
-    trainer.run(manifest)
-
-
-if __name__ == "__main__":
-    main()

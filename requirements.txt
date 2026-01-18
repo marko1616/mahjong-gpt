@@ -4,3 +4,5 @@ tensorboard
 safetensors
 pydantic
 rich
+questionary
+typer

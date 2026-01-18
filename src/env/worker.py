@@ -16,21 +16,16 @@ def _worker_loop(pipe, seed: int, reward_config: RewardConfig):
     Independent worker process loop.
     """
     env = MahjongEnv(seed=seed, rc=reward_config)
-    try:
-        while True:
-            cmd, data = pipe.recv()
+    while True:
+        cmd, data = pipe.recv()
 
-            if cmd == CMD_RESET:
-                pipe.send(env.reset(seed=data))
-            elif cmd == CMD_STEP:
-                # data is action
-                pipe.send(env.step(data))
-            elif cmd == CMD_CLOSE:
-                break
-    except Exception as e:
-        print(f"Worker error: {e}")
-    finally:
-        pipe.close()
+        if cmd == CMD_RESET:
+            pipe.send(env.reset(seed=data))
+        elif cmd == CMD_STEP:
+            # data is action
+            pipe.send(env.step(data))
+        elif cmd == CMD_CLOSE:
+            break
 
 
 class AsyncMahjongEnv:

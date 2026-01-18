@@ -133,6 +133,7 @@ class Agent:
         p_old = ckpt_dir / "policy.safetensors"
         v_old = ckpt_dir / "value.safetensors"
 
+        print(f"Loading policy weights from {p_old}")
         if p_old.exists():
             self.policy_model_old.load_state_dict(load_file(str(p_old)), strict=strict)
             # Keep live model consistent unless you explicitly want divergence.
@@ -140,6 +141,7 @@ class Agent:
                 self.policy_model_old.state_dict(), strict=strict
             )
 
+        print(f"Loading value weights from {v_old}")
         if v_old.exists():
             self.value_model_old.load_state_dict(load_file(str(v_old)), strict=strict)
             self.value_model.load_state_dict(
@@ -155,6 +157,7 @@ class Agent:
 
     def load_optim_state(self, state: dict[str, Any]) -> None:
         """Restore optimizer states exported by export_optim_state()."""
+        print("Restoring optimizer states.")
         if "optimizer_policy" in state:
             self.optimizer_policy.load_state_dict(state["optimizer_policy"])
         if "optimizer_value" in state:
@@ -599,7 +602,7 @@ class Agent:
 
                 progress.reset(batch_task)
                 progress.update(
-                    batch_task, description=f"[magenta]Epoch {epoch+1} batches"
+                    batch_task, description=f"[magenta]Epoch {epoch + 1} batches"
                 )
                 for start in range(0, N, minibatch_size):
                     end = min(start + minibatch_size, N)

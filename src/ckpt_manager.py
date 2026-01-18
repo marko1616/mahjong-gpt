@@ -15,6 +15,10 @@ class PassSpec(BaseModel):
     This object must never be mutated once the pass starts, so results remain reproducible.
     """
 
+    init_from_pass_id: Optional[int] = None
+    init_from_episode: Optional[int] = None
+    init_mode: Literal["full", "weights_only"] = "full"
+
     model_config = ConfigDict(extra="forbid")
 
     pass_id: int
@@ -150,3 +154,12 @@ class CkptManager:
                 break
         self.save_manifest(manifest)
         self._write_pass_state(pass_id, new_state)
+
+    def append_pass(self, manifest: RunManifest, new_pass: PassSpec) -> RunManifest:
+        """Append a new pass to existing run and make it active."""
+        manifest.passes.append(PassRecord(spec=new_pass))
+        manifest.active_pass_id = new_pass.pass_id
+        self.save_manifest(manifest)
+        self._write_pass_spec(new_pass)
+        self._write_pass_state(new_pass.pass_id, manifest.passes[-1].state)
+        return manifest

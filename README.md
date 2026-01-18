@@ -29,38 +29,94 @@ This project implements a Riichi Mahjong intelligent agent based on reinforcemen
    pip install -r requirements.txt
    ```
 
-## Usage
+## CLI Tool
 
-1. Start training:
-   ```bash
-   python -m src.trainer
-   ```
-   This will start the agent training process. Training logs and model weights will be automatically saved to the specified directories.
+The `cli.py` at the project root provides an interactive command-line tool for managing multi-pass training workflows.
 
-2. Monitor training:
-   Use TensorBoard to view training progress and performance:
-   ```bash
-   tensorboard --logdir=runs
-   ```
+### Core Concepts
 
-3. Configuration:
-   Modify `src/config.py` to adjust hyperparameters. The configuration uses Pydantic for type-safe settings:
-   ```python
-   from src.config import get_default_config, get_eval_config, Config
-   
-   # Use default configuration
-   config = get_default_config()
-   
-   # Get evaluation mode configuration
-   config = get_eval_config()
-   
-   # Or load custom configuration from JSON
-   config = Config.from_json(json_string)
-   ```
+- **Run**: A complete training experiment identified by `run_id`, containing one or more Passes
+- **Pass**: A training phase with its own config, checkpoints, and state. Can start from scratch or inherit weights from another Pass's checkpoint
+- **Manifest**: Metadata file tracking all Passes' configurations and states within a Run
+
+### Starting the CLI
+
+```bash
+python cli.py interactive
+```
+
+You'll be prompted for `root_dir` (model storage root) and `run_id` (run identifier). These can also be preset via environment variables:
+
+```bash
+export MAHJONG_GPT_ROOT=/mnt/models/mahjong-gpt
+export MAHJONG_GPT_RUN_ID=model-00
+python cli.py interactive
+```
+
+### Available Tasks
+
+| Task | Description |
+|------|-------------|
+| `status` | Show current Run status (Pass progress, active Pass, etc.) |
+| `init-run` | Initialize a new Run with Manifest and first Pass |
+| `set-active` | Set the active Pass (TrainerRunner starts here) |
+| `append-pass` | Add a new Pass, optionally bootstrapping from existing checkpoint |
+| `edit-config` | Edit Pass config in `$EDITOR` (Pydantic validation) |
+| `reset-pass-state` | Reset Pass state to pending (checkpoints preserved) |
+| `run` | Launch TrainerRunner on the active Pass |
+
+### Usage Examples
+
+**Scenario: Train from scratch, then continue with new hyperparameters**
+
+```
+# 1. Initialize Run and pass-0
+Choose a task: init-run
+Run notes: First experiment
+First pass name: pass-0
+total_episodes for pass-0: 1000
+→ Initialized run.
+
+# 2. Start training
+Choose a task: run
+Run active pass 0 now? Yes
+→ TrainerRunner begins pass-0
+
+# 3. After pass-0 completes, add pass-1 inheriting weights from pass-0
+Choose a task: append-pass
+Config source: Edit JSON in $EDITOR  # modify learning rate, etc.
+New pass name: pass-1-finetune
+Bootstrap from existing pass checkpoint? Yes
+Select source pass: 0 - pass-0 (completed)
+Source episode (blank = latest): [Enter]
+init_mode: weights_only
+→ Appended pass 1 and set active.
+
+# 4. Continue training
+Choose a task: run
+→ TrainerRunner loads pass-0 weights, executes pass-1
+```
+
+**Scenario: Check training status**
+
+```
+Choose a task: status
+
+╭─────────────────────────────────────────────────────────╮
+│ Run  run_id=model-00  active_pass_id=1  passes=2        │
+╰─────────────────────────────────────────────────────────╯
+┌─────────┬────────────────┬───────────┬─────────┬──────────┬─────────────┬──────────────────────┬───────────────────────┐
+│ pass_id │ name           │ status    │ curr_ep │ total_ep │ best_metric │ last_ckpt_dir        │ init_from             │
+├─────────┼────────────────┼───────────┼─────────┼──────────┼─────────────┼──────────────────────┼───────────────────────┤
+│ 0       │ pass-0         │ completed │ 1000    │ 1000     │ 0.4521      │ pass_0/ckpt_ep1000   │ -                     │
+│ 1       │ pass-1-finetune│ running   │ 350     │ 500      │ 0.4892      │ pass_1/ckpt_ep350    │ 0:latest (weights_only)│
+└─────────┴────────────────┴───────────┴─────────┴──────────┴─────────────┴──────────────────────┴───────────────────────┘
+```
 
 ## Project Structure
 
 ```
+cli.py                  # interactive cli tool
 src/
 ├── trainer.py          # Training entry point
 ├── agent.py            # PPO algorithm agent implementation
