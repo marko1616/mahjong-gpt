@@ -411,6 +411,47 @@ def _task_run(store: CkptManager) -> None:
     TrainerRunner(store).run(manifest)
     console.print("[green]TrainerRunner finished.[/green]")
 
+def _task_ruff_check(store: CkptManager) -> None:
+    """Run ruff check on all Python files."""
+    fix = questionary.confirm("Apply --fix automatically?", default=False).ask()
+    cmd = ["ruff", "check", "src/", "tests/"]
+    if fix:
+        cmd.append("--fix")
+
+    console.print(f"[cyan]Running: {' '.join(cmd)}[/cyan]")
+    result = subprocess.run(cmd, check=False)
+    if result.returncode == 0:
+        console.print("[green]ruff check passed.[/green]")
+    else:
+        console.print(f"[yellow]ruff check exited with code {result.returncode}[/yellow]")
+
+
+def _task_ruff_format(store: CkptManager) -> None:
+    """Run ruff format on all Python files."""
+    cmd = ["ruff", "format", "src/", "tests/"]
+
+    console.print(f"[cyan]Running: {' '.join(cmd)}[/cyan]")
+    result = subprocess.run(cmd, check=False)
+    if result.returncode == 0:
+        console.print("[green]ruff format completed.[/green]")
+    else:
+        console.print(f"[yellow]ruff format exited with code {result.returncode}[/yellow]")
+
+
+def _task_pytest_cov(store: CkptManager) -> None:
+    """Run pytest with coverage on src."""
+    cmd = ["pytest", "--cov=src"]
+
+    extra = questionary.text("Extra pytest args (optional):", default="").ask()
+    if extra and extra.strip():
+        cmd.extend(extra.strip().split())
+
+    console.print(f"[cyan]Running: {' '.join(cmd)}[/cyan]")
+    result = subprocess.run(cmd, check=False)
+    if result.returncode == 0:
+        console.print("[green]pytest passed.[/green]")
+    else:
+        console.print(f"[red]pytest exited with code {result.returncode}[/red]")
 
 TASKS: List[Dict[str, Any]] = [
     {
@@ -447,6 +488,21 @@ TASKS: List[Dict[str, Any]] = [
         "name": "run",
         "desc": "Run TrainerRunner on the active pass (auto-resume).",
         "fn": _task_run,
+    },
+    {
+        "name": "ruff-check",
+        "desc": "Run ruff check **/*.py (optional --fix).",
+        "fn": _task_ruff_check,
+    },
+    {
+        "name": "ruff-format",
+        "desc": "Run ruff format **/*.py.",
+        "fn": _task_ruff_format,
+    },
+    {
+        "name": "pytest-cov",
+        "desc": "Run pytest --cov=src.",
+        "fn": _task_pytest_cov,
     },
     {"name": "exit", "desc": "Exit the CLI tool.", "fn": None},
 ]

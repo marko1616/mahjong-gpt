@@ -6,3 +6,6 @@ pydantic
 rich
 questionary
 typer
+pytest
+pytest-cov
+pytest-asyncio

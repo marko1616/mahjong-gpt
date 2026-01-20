@@ -30,6 +30,7 @@ from .model import GPTModel
 from .config import Config
 from .schedulers import Scheduler
 from .schemes import Trail, ReplayBuffer
+from .utils.rl_utils import get_gaes, get_n_tds, masked_logprob
 
 
 class Agent:
@@ -339,91 +340,6 @@ class Agent:
             states = states[: t_end + 1]
         return rewards, actions, dones, states, action_masks
 
-    def _get_GAEs(
-        self, rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Compute Generalized Advantage Estimation.
-
-        Args:
-            rewards: [T]
-            values: [T]
-            dones: [T]
-        Returns:
-            advs: [T]
-        """
-        T = rewards.shape[0]
-        device, dtype = rewards.device, rewards.dtype
-
-        masks = (1.0 - dones.to(dtype)).to(device)  # [T]
-        # values_next: [T] (shifted and zero-padded)
-        values_next = torch.cat(
-            [values[1:], torch.zeros(1, device=device, dtype=dtype)], dim=0
-        )
-        # deltas: [T]
-        deltas = rewards + self.gamma * values_next * masks - values
-
-        advs = torch.zeros(T, device=device, dtype=dtype)
-        gae = torch.zeros(1, device=device, dtype=dtype)
-        for t in reversed(range(T)):
-            gae = deltas[t] + self.gamma * self.lambd * gae * masks[t]
-            advs[t] = gae
-        return advs  # [T]
-
-    def _get_nTDs(
-        self, rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Compute n-step Temporal Difference returns.
-
-        Args:
-            rewards: [T]
-            values: [T]
-            dones: [T]
-        Returns:
-            out: [T]
-        """
-        n = int(self.n_td_scheduler.get())
-        T = rewards.shape[0]
-        device, dtype = rewards.device, rewards.dtype
-
-        out = torch.zeros(T, device=device, dtype=dtype)
-        for t in range(T):
-            ret = torch.zeros(1, device=device, dtype=dtype)
-            discount = torch.ones(1, device=device, dtype=dtype)
-            for k in range(n):
-                if t + k >= T:
-                    break
-                ret = ret + discount * rewards[t + k]
-                if dones[t + k]:
-                    discount = torch.zeros(1, device=device, dtype=dtype)
-                    break
-                discount = discount * self.gamma
-            boot_index = t + n
-            if boot_index < T and discount.item() != 0.0:
-                ret = ret + discount * values[boot_index]
-            out[t] = ret
-        return out  # [T]
-
-    def _masked_logprob(
-        self, logits: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Compute log probability of selected actions with masking.
-
-        Args:
-            logits: [B, Out]
-            actions: [B]
-            action_mask: [B, Out]
-        Returns:
-            logp_all: [B]
-        """
-        logits = logits.float()  # [B, Out]
-        invalid = ~action_mask.to(torch.bool)  # [B, Out]
-        logits = logits.masked_fill(invalid, -1e9)
-        logp_all = torch.log_softmax(logits, dim=-1)  # [B, Out]
-        return logp_all.gather(-1, actions.unsqueeze(-1)).squeeze(-1)  # [B]
-
     def _select_action(self, input_state: Any, action_mask: list[int]) -> int:
         with torch.no_grad():
             ids = self._state_to_ids(input_state)
@@ -535,7 +451,7 @@ class Agent:
                             self.policy_model_old(s_t), s_t
                         )
                         # old_logp: [T]
-                        old_logp = self._masked_logprob(old_logits, a_t, m_t).detach()
+                        old_logp = masked_logprob(old_logits, a_t, m_t).detach()
 
                         # old_v: [T]
                         old_v = self._gather_last_nonpad(
@@ -543,9 +459,19 @@ class Agent:
                         ).detach()
 
                     # adv: [T]
-                    adv = self._get_GAEs(r_t, old_v, d_t).float().detach()
+                    adv = (
+                        get_gaes(r_t, old_v, d_t, self.gamma, self.lambd)
+                        .float()
+                        .detach()
+                    )
                     # ntd: [T]
-                    ntd = self._get_nTDs(r_t, old_v, d_t).float().detach()
+                    ntd = (
+                        get_n_tds(
+                            r_t, old_v, d_t, self.gamma, int(self.n_td_scheduler.get())
+                        )
+                        .float()
+                        .detach()
+                    )
                     # target_v: [T]
                     target_v = (old_v + (ntd - old_v) * mix).detach()
 
@@ -621,9 +547,7 @@ class Agent:
                             self.policy_model(mb_states), mb_states
                         )
                         # new_logp: [B]
-                        new_logp = self._masked_logprob(
-                            new_logits, mb_actions, mb_masks
-                        )
+                        new_logp = masked_logprob(new_logits, mb_actions, mb_masks)
 
                         # values: [B]
                         values = self._gather_last_nonpad(
